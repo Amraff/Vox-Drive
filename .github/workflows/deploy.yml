@@ -49,14 +49,24 @@ jobs:
         run: |
           aws ecs describe-task-definition \
             --task-definition $TASK_DEFINITION_FAMILY \
-            --query taskDefinition > taskdef.json
+            --query 'taskDefinition' \
+            > taskdef.json
 
-      - name: Update task definition with new image
-        id: taskdef
+      - name: Create new task definition
         run: |
-          NEW_TASKDEF=$(jq --arg IMAGE_URI "$IMAGE_URI" \
-            '.containerDefinitions[0].image=$IMAGE_URI' taskdef.json)
-          echo "$NEW_TASKDEF" > new-taskdef.json
+          jq '{
+            family: .family,
+            taskRoleArn: .taskRoleArn,
+            executionRoleArn: .executionRoleArn,
+            networkMode: .networkMode,
+            containerDefinitions: .containerDefinitions,
+            requiresCompatibilities: .requiresCompatibilities,
+            cpu: .cpu,
+            memory: .memory
+          }' taskdef.json > clean-taskdef.json
+
+          jq --arg IMAGE_URI "$IMAGE_URI" \
+            '.containerDefinitions[0].image=$IMAGE_URI' clean-taskdef.json > new-taskdef.json
 
       # ---- Register new Task Definition ----
       - name: Register ECS task definition
