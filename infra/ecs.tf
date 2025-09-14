@@ -11,6 +11,10 @@ resource "aws_lb" "alb" {
   load_balancer_type = "application"
   subnets            = aws_subnet.public[*].id
   security_groups    = [aws_security_group.alb_allow.id]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_lb_target_group" "tg" {
@@ -20,15 +24,16 @@ resource "aws_lb_target_group" "tg" {
   target_type = "ip"
 
   health_check {
-    path = "/docs"
-    port = "8000"
+    path     = "/docs"
+    port     = "8000"
+    protocol = "HTTP"
+    matcher  = "200"
   }
 
   lifecycle {
     create_before_destroy = true
   }
 }
-
 
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.alb.arn
@@ -39,6 +44,18 @@ resource "aws_lb_listener" "http" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.tg.arn
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ----------------------------
+# CloudWatch Logs Group
+# ----------------------------
+resource "aws_cloudwatch_log_group" "ecs" {
+  name              = "/ecs/audiobook"
+  retention_in_days = 7
 }
 
 # ----------------------------
@@ -66,9 +83,9 @@ resource "aws_ecs_task_definition" "app" {
         }
       ]
       logConfiguration = {
-        logDriver = "awslogs"
+        logDriver = "awslogs",
         options = {
-          "awslogs-group"         = "/ecs/audiobook"
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
           "awslogs-region"        = var.aws_region
           "awslogs-stream-prefix" = "backend"
         }
@@ -88,8 +105,8 @@ resource "aws_ecs_service" "app" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets         = aws_subnet.public[*].id
-    security_groups = [aws_security_group.ecs_tasks.id]
+    subnets          = aws_subnet.public[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
     assign_public_ip = true
   }
 
@@ -100,6 +117,10 @@ resource "aws_ecs_service" "app" {
   }
 
   depends_on = [aws_lb_listener.http]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # ----------------------------
