@@ -1,0 +1,77 @@
+name: CI/CD - FastAPI Audiobook App
+
+on:
+  push:
+    branches: [ "master" ]
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read    # to checkout code
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: fastapi-polly       # must match infra/ecr.tf
+  ECS_CLUSTER: audiobook-cluster      # must match infra/ecs.tf
+  ECS_SERVICE: audiobook-service      # must match infra/ecs.tf
+  TASK_DEFINITION_FAMILY: audiobook-task
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ---- AWS Auth (OIDC) ----
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ---- Login to ECR ----
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---- Build & Push Image ----
+      - name: Build, tag, and push Docker image to ECR
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./backend
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG ${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:$IMAGE_TAG
+          docker push ${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:$IMAGE_TAG
+          echo "IMAGE_URI=${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:$IMAGE_TAG" >> $GITHUB_ENV
+
+      # ---- Render new Task Definition ----
+      - name: Download current ECS task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $TASK_DEFINITION_FAMILY \
+            --query taskDefinition > taskdef.json
+
+      - name: Update task definition with new image
+        id: taskdef
+        run: |
+          NEW_TASKDEF=$(jq --arg IMAGE_URI "$IMAGE_URI" \
+            '.containerDefinitions[0].image=$IMAGE_URI' taskdef.json)
+          echo "$NEW_TASKDEF" > new-taskdef.json
+
+      # ---- Register new Task Definition ----
+      - name: Register ECS task definition
+        id: register-taskdef
+        run: |
+          arn=$(aws ecs register-task-definition \
+            --cli-input-json file://new-taskdef.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "TASKDEF_ARN=$arn" >> $GITHUB_ENV
+
+      # ---- Deploy new Task Definition ----
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $TASKDEF_ARN
